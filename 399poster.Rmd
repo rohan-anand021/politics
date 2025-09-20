@@ -1,0 +1,395 @@
+---
+title: "The Effect on Unemployment on Democratic Vote Share: An Analysis of Swing States in the 2020 Presidential Election"
+author:  
+  - name: Rohan Anand
+    affil: 1
+affiliation:
+  - num: 1
+    address: "PO 399"
+column_numbers: 4
+output: 
+  posterdown::posterdown_html:
+    self_contained: false
+    font_size: "0.1rem"          
+    base_font_size: "0.1rem"     
+    body_font_size: "0.1rem"     
+    header_font_size: "0.3rem"   
+---
+
+```{r setup, include=FALSE}
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+knitr::opts_chunk$set(echo = FALSE,
+                     warning = FALSE,
+                     message = FALSE,
+                     fig.align = 'center',
+                     out.width = "100%")
+
+library(ggplot2)
+library(dplyr)
+library(corrplot)
+library(kableExtra)
+library(tidyverse)
+library(sf)
+library(viridis)
+library(patchwork)
+library(broom)
+
+
+counties_sf = readRDS("usa_county_shapefile.rds")
+unemployment = readRDS("unemployment_rate_by_county.rds")
+election_data = readRDS("election_data_president_2012_2020.rds")
+age_data = readRDS("age_data_by_county_2020.rds")
+```
+
+# Research Question
+
+The 2020 presidential election occurred during an unprecedented economic crisis with record unemployment rates. As a result, I am interested to understand whether this contributed to the appointment of a Democratic President, contrary to the incumbent Republican establishment. This poster examines how county-level unemployment rates and age demographics influenced Democratic vote share across seven key swing states: Michigan, Wisconsin, Pennsylvania, North Carolina, Georgia, Arizona and Nevada.
+
+Specifically, I will analyze:
+
+1.  The relationship between county-level unemployment rates and Democratic vote share
+2.  Whether this relationship varies across different age demographics
+3.  How these patterns differ across swing states
+
+Using age data and unemployment by county for 2020, and 2020 election data for president.
+
+# Preliminary Analysis
+
+```{r}
+swing_states_all = c("MI", "WI", "PA", "NC", "GA", "AZ", "NV")
+
+unemployment_clean = unemployment |>
+ mutate(fips = str_trim(fips)) |>
+ filter(year == 2020) |>
+ mutate(
+   mean_unemployment = mean(unemploymnt_rate, na.rm = TRUE),
+   deviation = unemploymnt_rate - mean_unemployment
+ )
+
+deviation_limits = max(abs(range(unemployment_clean$deviation, na.rm = TRUE))) * c(-1, 1)
+
+state_plots_all = map(swing_states_all, function(state_code) {
+ state_map = counties_sf |>
+   filter(state == state_code) |>
+   left_join(unemployment_clean, by = "fips")
+ 
+ ggplot(state_map) +
+   geom_sf(aes(fill = deviation), color = "white", size = 0.1) +
+   scale_fill_viridis_c(
+     name = "Percentage Points\nfrom National Mean",
+     option = "viridis",
+     direction = -1,
+     limits = deviation_limits
+   ) +
+   theme_minimal() +
+   theme(
+     axis.text = element_blank(),
+     axis.ticks = element_blank(),
+     panel.grid = element_blank(),
+     plot.title = element_text(size = 10, face = "bold", hjust = 0.5),
+     plot.margin = margin(5, 5, 5, 5),
+     legend.position = "none"
+   ) +
+   labs(title = state_code)
+})
+
+row1 = wrap_plots(state_plots_all[1:2], ncol = 2)
+row2 = wrap_plots(state_plots_all[3:4], ncol = 2)
+row3 = wrap_plots(state_plots_all[5:6], ncol = 2)
+row4 = wrap_plots(state_plots_all[7], ncol = 1)
+
+combined_plot = (row1 / row2 / row3 / row4) + 
+ plot_layout(guides = "collect") &
+ theme(
+   legend.position = "right",
+   legend.key.height = unit(1, "cm"),
+   legend.text = element_text(size = 8),
+   legend.title = element_text(size = 8, face = "bold"),
+   plot.margin = margin(5, 5, 5, 5)
+ )
+
+ggsave("combined_states_map.png", combined_plot, width = 4, height = 7, dpi = 150)
+print(combined_plot)
+```
+
+These maps show county-level unemployment rates across seven swing states in 2020, with colors indicating how each county's unemployment rate deviated from the national mean. Darker blue areas represent counties with unemployment rates significantly above the national average, while lighter green areas indicate rates below average. Most counties show moderate variation (light to medium colors), though some areas, particularly in Michigan and Nevada, experienced notably higher unemployment rates as shown by the darker blue shading.
+
+# Regression Results
+
+```{r}
+scatter_data = unemployment |>
+ mutate(state = str_extract(county_name, ", [A-Z]{2}$") |>
+        str_replace(", ", "")) |>
+ filter(year == 2020, 
+        state %in% c("MI", "WI", "PA", "NC", "GA", "AZ", "NV")) |>
+ inner_join(
+   election_data |>
+     filter(year == 2020) |>
+     mutate(dem_vote_share = (dem_votes / total_vote) * 100),
+   by = "fips"
+ )
+p <- ggplot(scatter_data, aes(x = unemploymnt_rate, y = dem_vote_share, color = state.x)) +
+ geom_point(alpha = 0.8, size = 1) +
+ geom_smooth(method = "lm", se = TRUE, color = "black", linewidth = 0.3) +
+ scale_color_viridis_d(name = "State") +
+ theme_minimal() +
+ labs(
+   x = "Unemployment Rate (%)",
+   y = "Democratic Vote Share (%)",
+   title = "County-Level Unemployment vs. Democratic Vote Share",
+   subtitle = "By County in Swing States (2020)"
+ ) +
+ theme(
+   plot.title = element_text(size = 10, face = "bold"),
+   plot.subtitle = element_text(size = 8),
+   axis.title = element_text(size = 8),
+   axis.text = element_text(size = 7),
+   panel.grid.minor = element_blank(),
+   legend.position = "right",
+   legend.title = element_text(face = "bold", size = 8),
+   legend.text = element_text(size = 7),
+   plot.margin = unit(c(0.2, 0.2, 0.2, 0.2), "cm")
+ )
+ggsave("scatter_plot.png", p, width = 4, height = 4, dpi = 200)
+print(p)
+```
+
+```{r, include = FALSE}
+regression_data = unemployment |>
+ mutate(state = str_extract(county_name, ", [A-Z]{2}$") |>
+        str_replace(", ", "")) |>
+ filter(year == 2020, 
+        state %in% c("MI", "WI", "PA", "NC", "GA", "AZ", "NV")) |>
+ inner_join(
+   election_data |>
+     filter(year == 2020) |>
+     mutate(dem_vote_share = (dem_votes / total_vote) * 100),
+   by = "fips"
+ )
+overall_model = lm(dem_vote_share ~ unemploymnt_rate, data = regression_data)
+state_models = regression_data |>
+ group_by(state.x) |>
+ summarize(
+   model = list(lm(dem_vote_share ~ unemploymnt_rate, data = cur_data())),
+   tidy_model = list(tidy(lm(dem_vote_share ~ unemploymnt_rate, data = cur_data())))
+ )
+```
+
+```{r}
+overall_results = bind_cols(
+tidy(overall_model) |>
+  filter(term == "unemploymnt_rate") |>
+  select(estimate, std.error, statistic, p.value),
+glance(overall_model) |>
+  select(r.squared)
+)
+overall_results |>
+kable(
+  col.names = c("Estimate", "Std. Error", "t-value", "p-value", "R-squared"),
+  caption = "Overall Regression Results: Unemployment Rate Effect on Democratic Vote Share",
+  digits = 4,
+  align = c('c', 'c', 'c', 'c', 'c'),
+  format = "html"
+) |>
+kable_styling(
+  bootstrap_options = c("striped", "hover"),
+  full_width = FALSE,
+  position = "left"
+)
+```
+
+The regression analysis shows a statistically significant but weak relationship between unemployment, the independent variable, and Democratic vote share, the dependent variable. A 1 percentage point increase in unemployment corresponds to a 1.58 percentage point increase in Democratic vote share (p \< 0.001). However, unemployment only explains 6.2% of the variation in Democratic support.
+
+Georgia and Nevada showed strong positive relationships between unemployment and Democratic votes, while Michigan uniquely showed a negative relationship. Three states showed no significant relationship, indicating unemployment was not a consistent predictor of Democratic voting.
+
+```{r, include=FALSE}
+state_models |>
+unnest(tidy_model) |>
+filter(term == "unemploymnt_rate") |>
+select(state.x, estimate, std.error, statistic, p.value) |>
+arrange(state.x) |>
+kable(
+  col.names = c("State", "Estimate", "Std. Error", "t-value", "p-value"),
+  caption = "State-by-State Regression Results: Unemployment Rate Effect on Democratic Vote Share",
+  digits = 4,
+  align = c('l', 'c', 'c', 'c', 'c'),
+  format = "html"
+) |>
+kable_styling(
+  bootstrap_options = c("striped", "hover"),
+  full_width = FALSE,
+  position = "left"
+) |>
+column_spec(1, bold = TRUE)
+```
+
+```{r}
+plot_data = state_models |>
+ unnest(tidy_model) |>
+ filter(term == "unemploymnt_rate") |>
+ select(state.x, estimate, std.error, p.value) |>
+ mutate(
+   State = state.x,
+   Estimate = estimate,
+   SE = std.error,
+   Significant = p.value < 0.05
+ ) |>
+ select(State, Estimate, SE, Significant)
+ggplot(plot_data, aes(x = reorder(State, Estimate), y = Estimate)) +
+ geom_bar(stat = "identity", aes(fill = Significant), width = 0.6) +
+ geom_errorbar(aes(ymin = Estimate - 1.96*SE, 
+                   ymax = Estimate + 1.96*SE),
+               width = 0.2) +
+ geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+ scale_fill_manual(values = c("grey70", "darkblue"),
+                  labels = c("p ≥ 0.05", "p < 0.05")) +
+ coord_flip() +
+ theme_minimal() +
+ labs(
+   title = "Effect of Unemployment on Democratic Vote Share by State",
+   subtitle = "Percentage point change in Democratic vote share per 1% increase in unemployment",
+   x = "",
+   y = "Change in Democratic Vote Share (%)",
+   fill = "Statistical\nSignificance"
+ ) +
+ theme(
+   plot.title = element_text(face = "bold", size = 12),
+   plot.subtitle = element_text(size = 10),
+   legend.position = "bottom",
+   panel.grid.minor = element_blank()
+ )
+```
+
+The plot shows how unemployment affected Democratic vote share across swing states in 2020. While Georgia and Nevada showed strong positive relationships (higher unemployment linked to more Democratic votes), and Wisconsin showed a moderate positive effect, Michigan actually saw decreased Democratic support with higher unemployment. Three states (Arizona, North Carolina, and Pennsylvania) showed no significant relationship, indicating unemployment was not a consistent predictor of Democratic voting.
+
+# Relationship Between Unemployment and Democratic Vote Share in Different Age Brackets
+
+```{r}
+age_summary_long = age_data |>
+  mutate(
+    total_pop = age_under_18 + age_18_to_34 + age_35_to_44 +
+                age_45_to_54 + age_55_to_64 + age_65_to_74 + age_75_plus,
+    young = (age_18_to_34) / total_pop,
+    middle = (age_35_to_44 + age_45_to_54) / total_pop,
+    older = (age_55_to_64 + age_65_to_74 + age_75_plus) / total_pop,
+    dominant_group = case_when(
+      young > middle & young > older ~ "18-35",
+      middle > young & middle > older ~ "36-55",
+      TRUE ~ "56+"
+    )
+  ) |>
+  filter(state %in% c("MI", "WI", "PA", "NC", "GA", "AZ", "NV")) |>
+  group_by(state, dominant_group) |>
+  summarise(count = n()) |>
+  group_by(state) |>
+  mutate(proportion = count / sum(count) * 100)
+ggplot(age_summary_long, aes(x = state, y = proportion, fill = dominant_group)) +
+  geom_bar(stat = "identity", position = "stack") +
+  scale_fill_viridis_d(name = "Age Group") +
+  theme_minimal() +
+  labs(
+    title = "Distribution of Age-Dominant Counties by State",
+    x = "State",
+    y = "Percentage of Counties"
+  ) +
+  theme(
+    plot.title = element_text(size = 10, face = "bold"),
+    axis.title = element_text(size = 8),
+    axis.text = element_text(size = 7),
+    legend.title = element_text(size = 8, face = "bold"),
+    legend.text = element_text(size = 7),
+    legend.position = "bottom"
+  )
+```
+
+Now, I am interested in examining whether the general positive correlation of unemployment and an increase of democratic vote share is consistent across age groups. To analyze this relationship, I employ dummy variables to categorize counties based on their dominant age demographic - assigning each county a binary indicator (1 or 0) for whether it is predominantly young (18-35), middle-aged (36-55), or older (56+). By interacting these categorical age variables with unemployment rates, forming an independent variable, I can see if democratic vote share, the dependent variable, is positively correlated across all demographics.
+
+```{r}
+regression_data_age = unemployment |>
+ mutate(state = str_extract(county_name, ", [A-Z]{2}$") |>
+        str_replace(", ", "")) |>
+ filter(year == 2020, 
+        state %in% c("MI", "WI", "PA", "NC", "GA", "AZ", "NV")) |>
+ inner_join(election_data |>
+     filter(year == 2020) |>
+     mutate(dem_vote_share = (dem_votes / total_vote) * 100),
+   by = "fips") |>
+ inner_join(
+   age_data |>
+   mutate(
+     total_pop = age_under_18 + age_18_to_34 + age_35_to_44 +
+                 age_45_to_54 + age_55_to_64 + age_65_to_74 + age_75_plus,
+     young = age_18_to_34 / total_pop,
+     middle = (age_35_to_44 + age_45_to_54) / total_pop,
+     older = (age_55_to_64 + age_65_to_74 + age_75_plus) / total_pop,
+     dominant_age = case_when(
+       young > middle & young > older ~ "18-35",
+       middle > young & middle > older ~ "36-55",
+       TRUE ~ "56+"
+     )
+   ) |>
+   select(fips, dominant_age),
+   by = "fips"
+ )
+overall_age_model = lm(dem_vote_share ~ unemploymnt_rate * dominant_age, 
+                     data = regression_data_age)
+tidy(overall_age_model) |>
+select(term, estimate, p.value) |>
+kable(
+  col.names = c("Term", "Estimate", "P-value"),
+  caption = "Overall Regression Results with Age Group Interactions",
+  digits = 4,
+  align = c('l', 'c', 'c'),
+  format = "html"
+) |>
+kable_styling(
+  bootstrap_options = c("striped", "hover"),
+  full_width = FALSE,
+  position = "left"
+)
+```
+
+Young-dominant counties showed the strongest relationship between unemployment and Democratic support (+3.23 percentage points per 1% unemployment increase, p \< 0.05). Middle-aged counties showed slightly stronger effects (+1.47 points, not significant) and lower baseline Democratic support (-19.11 points, p \< 0.10), while older counties showed weaker relationships with no significant baseline difference.
+
+```{r}
+state_age_models = regression_data_age |>
+  group_by(state.x) |>
+  group_modify(~ {
+    model = lm(dem_vote_share ~ unemploymnt_rate * dominant_age, data = .x)
+    tidy(model)
+  }) |>
+  select(state.x, term, estimate, p.value) |>
+  rename(
+    State = state.x,
+    Term = term,
+    Estimate = estimate,
+    P.Value = p.value
+  ) |>
+  filter(Term != "(Intercept)") |>
+  arrange(State, Term)
+significant_state_results = state_age_models |>
+  filter(P.Value < 0.05) |>
+  arrange(State, Term)
+significant_state_results |>
+  kable(
+    caption = "Significant State-by-State Regression Results (p < 0.05)",
+    digits = 4,
+    align = c('l', 'l', 'c', 'c'),
+    format = "html"
+  ) |>
+  kable_styling(
+    bootstrap_options = c("striped", "hover"),
+    full_width = FALSE,
+    position = "left"
+  )
+```
+
+Only three states showed significant age-related patterns: Michigan and North Carolina's older-population counties had lower Democratic support (-101.62 and -70.83 points respectively, p \< 0.05), while Nevada's youth-dominant counties showed increased Democratic support with higher unemployment (+3.08 points per 1% increase, p \< 0.01). The uneven distribution of age-dominant counties across states made interaction effects difficult to estimate elsewhere.
+
+# Conclusion
+
+This regression analysis reveals complex relationships between unemployment, age demographics, and voting patterns in the 2020 presidential election swing states. While higher unemployment rates generally predicted increased Democratic support, this relationship varied substantially across states and demographic groups. Georgia and Nevada showed the strongest positive associations between unemployment and Democratic votes, while Michigan's negative relationship suggests local factors may have influenced voting patterns differently there.
+
+Young-dominant counties showed consistent positive relationships between unemployment and Democratic support, while older-dominant counties demonstrated weaker or different patterns. This suggests that economic hardship may have influenced voting behavior differently across age groups, with younger populations more likely to shift Democratic in response to higher unemployment.
+
+Most important, the low R-squared in the models indicates that other factors -- such as education levels, rural-urban divides, or pandemic response preferences -- likely played substantial roles in determining voting patterns.
